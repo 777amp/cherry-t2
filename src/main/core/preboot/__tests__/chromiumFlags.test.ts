@@ -189,7 +189,8 @@ describe('configureChromiumFlags', () => {
   })
 
   describe('Raspberry Pi optimizations', () => {
-    it('keeps V8 JIT fast (no --optimize-for-size) and disables GPU rasterization by default on Pi', async () => {
+    it('keeps V8 JIT fast, disables VA-API and GPU rasterization, and uses ANGLE GLES-EGL on Pi', async () => {
+      vi.stubEnv('XDG_SESSION_TYPE', 'wayland')
       stubConstants({ isLinux: true, isWin: false, isPiOptimized: true, totalMemoryMB: 4096 })
       stubElectron()
       stubBootConfig()
@@ -197,7 +198,11 @@ describe('configureChromiumFlags', () => {
       const { configureChromiumFlags } = await loadModule()
       configureChromiumFlags()
 
+      expect(appendSwitchMock).toHaveBeenCalledWith('ozone-platform', 'wayland')
       expect(appendSwitchMock).toHaveBeenCalledWith('js-flags', '--max-old-space-size=1024')
+      expect(appendSwitchMock).toHaveBeenCalledWith('disable-accelerated-video-decode')
+      expect(appendSwitchMock).toHaveBeenCalledWith('use-gl', 'angle')
+      expect(appendSwitchMock).toHaveBeenCalledWith('use-angle', 'gles-egl')
       expect(appendSwitchMock).toHaveBeenCalledWith('disable-gpu-rasterization')
       expect(appendSwitchMock).not.toHaveBeenCalledWith('enable-gpu-rasterization')
       expect(appendSwitchMock).not.toHaveBeenCalledWith(

@@ -6,7 +6,8 @@ export const isWin = process.platform === 'win32'
 export const isLinux = process.platform === 'linux'
 export const isLinuxArm64 = isLinux && process.arch === 'arm64'
 // Session type, not Chromium's ozone backend: a Wayland session forced onto X11 via --ozone-platform=x11 still reads true.
-export const isLinuxWayland = isLinux && process.env.XDG_SESSION_TYPE === 'wayland'
+export const isLinuxWayland =
+  isLinux && (process.env.XDG_SESSION_TYPE === 'wayland' || Boolean(process.env.WAYLAND_DISPLAY))
 export const isDev = process.env.NODE_ENV === 'development'
 export const isPortable = isWin && 'PORTABLE_EXECUTABLE_DIR' in process.env
 // onnxruntime-node ships no darwin-x64 binding (arm64 only) — gates local model
@@ -35,4 +36,3 @@ export const isPiOptimized =
     : process.env.CHERRY_PI_MODE === '0'
       ? false
       : isRaspberryPi || (isLinuxArm64 && totalMemoryMB <= 8192)
-

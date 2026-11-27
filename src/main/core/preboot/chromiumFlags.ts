@@ -74,12 +74,17 @@ export function configureChromiumFlags(): void {
     enableFeatures.push('GlobalShortcutsPortal', 'WaylandWindowDecorations')
   }
 
-  // Linux (X11 and Wayland): set the window class/name and auto-select Ozone platform.
+  // Linux (X11 and Wayland): set the window class/name and select Ozone platform.
   if (isLinux) {
     app.commandLine.appendSwitch('class', 'CherryStudio')
     app.commandLine.appendSwitch('name', 'CherryStudio')
     if (!app.commandLine.hasSwitch('ozone-platform') && !app.commandLine.hasSwitch('ozone-platform-hint')) {
-      app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
+      if (isPiOptimized && isLinuxWayland) {
+        // Prefer native Wayland on Pi OS (labwc/Wayfire) to avoid XWayland DRI2 fallback.
+        app.commandLine.appendSwitch('ozone-platform', 'wayland')
+      } else {
+        app.commandLine.appendSwitch('ozone-platform-hint', 'auto')
+      }
     }
   }
 
@@ -108,9 +113,17 @@ export function configureChromiumFlags(): void {
     app.commandLine.appendSwitch('disable-smooth-scrolling')
     app.commandLine.appendSwitch('disable-background-networking')
     app.commandLine.appendSwitch('disable-component-update')
-    app.commandLine.appendSwitch('disable-features', 'BackForwardCache,MediaRouter,HardwareMediaKeyHandling')
+    // VideoCore VI does not implement VA-API; disable libva video decode probing at boot.
+    app.commandLine.appendSwitch('disable-accelerated-video-decode')
+    app.commandLine.appendSwitch(
+      'disable-features',
+      'BackForwardCache,MediaRouter,HardwareMediaKeyHandling,VaapiVideoDecoder,VaapiVideoDecodeLinuxGL'
+    )
 
     if (!forceSoftwareGL && !bootConfigService.get('app.disable_hardware_acceleration')) {
+      // Use Mesa V3D native EGL/GLES instead of desktop GLX/DRI2 probing.
+      app.commandLine.appendSwitch('use-gl', 'angle')
+      app.commandLine.appendSwitch('use-angle', 'gles-egl')
       if (process.env.CHERRY_PI_GPU_RASTER === '1') {
         app.commandLine.appendSwitch('enable-gpu-rasterization')
         app.commandLine.appendSwitch('ignore-gpu-blocklist')

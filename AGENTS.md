@@ -8,7 +8,7 @@ Terse mode default. Load `.agents/skills/caveman/SKILL.md`. Upstream repo rules 
 - Stack: Electron `45.2.2`, React `19`, Vite `8`, TypeScript, `better-sqlite3`, Drizzle ORM, pnpm workspace
 - Target hardware: Raspberry Pi 4B (`BCM2711` quad-core Cortex-A72, 2 GB / 4 GB / 8 GB RAM, VideoCore VI Mesa V3D, microSD)
 - Target OS: Debian 13 (Trixie) / Raspberry Pi OS 64-bit (`arm64` / `aarch64`), Wayland (labwc/Wayfire) and X11
-- Active release: `v2.2.3-rpi.2` (`.deb`, `SHA256SUMS.txt` — **`.deb` only, never build `.AppImage`**)
+- Active release: `v2.2.3-rpi.3` (`.deb`, `SHA256SUMS.txt` — **`.deb` only, never build `.AppImage`**)
 
 ## Goal
 

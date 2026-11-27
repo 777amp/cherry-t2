@@ -104,9 +104,16 @@ const ModelListSections: React.FC<ModelListSectionsProps> = ({
     }))
   }, [])
 
+  const piOptimized = typeof window !== 'undefined' && Boolean(window.api?.isPiOptimized)
+  const totalModelCount = useMemo(
+    () => enabledSections.reduce((sum, section) => sum + section.items.length, 0),
+    [enabledSections]
+  )
+  const defaultOpenLimit = piOptimized && totalModelCount > 30 ? 0 : 5
+
   const virtualRows = useMemo<ModelListVirtualRow[]>(() => {
     return enabledSections.flatMap(({ groupName, items }, index) => {
-      const defaultOpen = index <= 5
+      const defaultOpen = index <= defaultOpenLimit
       const open = groupOpenOverrides[groupName] ?? defaultOpen
       const groupRow: ModelListVirtualRow = {
         type: 'group',
@@ -138,7 +145,7 @@ const ModelListSections: React.FC<ModelListSectionsProps> = ({
         separatorRow
       ]
     })
-  }, [enabledSections, groupOpenOverrides])
+  }, [defaultOpenLimit, enabledSections, groupOpenOverrides])
 
   if (isLoading) {
     return (
@@ -179,7 +186,7 @@ const ModelListSections: React.FC<ModelListSectionsProps> = ({
         if (row?.type === 'separator') return MODEL_LIST_GROUP_SEPARATOR_HEIGHT
         return MODEL_LIST_MODEL_ROW_ESTIMATE
       }}
-      overscan={10}
+      overscan={piOptimized ? 2 : 10}
       getItemKey={(index) => virtualRows[index]?.key ?? index}>
       {(row) => {
         if (row.type === 'separator') {

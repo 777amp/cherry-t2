@@ -16,6 +16,8 @@ import { modelListClasses } from '../primitives/ProviderSettingsPrimitives'
 import { getModelOperationErrorMessage } from './errorMessage'
 import ModelCheckStatus from './ModelCheckStatus'
 
+const CAPABILITY_TAG_STYLE = { flexWrap: 'nowrap' } as const
+
 interface ModelListItemProps {
   ref?: React.RefObject<HTMLDivElement>
   model: Model
@@ -44,6 +46,7 @@ const ModelListItem: React.FC<ModelListItemProps> = ({
   onDelete
 }) => {
   const { t } = useTranslation()
+  const piOptimized = typeof window !== 'undefined' && Boolean(window.api?.isPiOptimized)
   const Icon = useIcon(getModelLogoRef(model))
   const deleteTooltip = isDefaultModel
     ? t('settings.models.manage.default_model_cannot_remove')
@@ -91,7 +94,13 @@ const ModelListItem: React.FC<ModelListItemProps> = ({
         <div className={modelListClasses.rowActionsCluster}>
           <div className={modelListClasses.rowCapabilityStrip}>
             <div className={modelListClasses.rowCapabilityTagCluster}>
-              <ModelTagsWithLabel model={model} provider={provider} size={12} style={{ flexWrap: 'nowrap' }} />
+              <ModelTagsWithLabel
+                model={model}
+                provider={provider}
+                size={12}
+                showTooltip={!piOptimized}
+                style={CAPABILITY_TAG_STYLE}
+              />
             </div>
             <FreeTrialModelTag modelId={model.id} providerId={model.providerId} />
           </div>

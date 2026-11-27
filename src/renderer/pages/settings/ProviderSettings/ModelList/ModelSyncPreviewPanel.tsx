@@ -58,6 +58,13 @@ type ManageVirtualRow =
       model: Model
     }
 
+const CAPABILITY_TAG_STYLE = { flexWrap: 'nowrap' } as const
+const LARGE_SYNC_LIST_MODEL_THRESHOLD = 30
+
+function isPiMode(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.api?.isPiOptimized)
+}
+
 function modelIdLine(model: Model) {
   return model.apiModelId ?? parseUniqueModelId(model.id).modelId
 }
@@ -91,6 +98,7 @@ const ModelRowIdentity = memo(function ModelRowIdentity({
   const { t } = useTranslation()
   const apiModelId = modelIdLine(model)
   const apiModelIdId = `${model.id}-api-model-id`
+  const piOptimized = isPiMode()
 
   return (
     <>
@@ -98,11 +106,21 @@ const ModelRowIdentity = memo(function ModelRowIdentity({
       <div className="min-w-0 flex-1">
         <div className={modelSyncClasses.manageRowTitleLine}>
           {/* Friendly names can collide, so the raw id must remain keyboard- and screen-reader-accessible. */}
-          <Tooltip content={apiModelId} placement="top" classNames={{ placeholder: 'min-w-0' }}>
-            <p tabIndex={0} aria-describedby={apiModelIdId} className={modelSyncClasses.manageRowTitle}>
+          {piOptimized ? (
+            <p
+              tabIndex={0}
+              aria-describedby={apiModelIdId}
+              title={apiModelId}
+              className={modelSyncClasses.manageRowTitle}>
               {model.name || apiModelId}
             </p>
-          </Tooltip>
+          ) : (
+            <Tooltip content={apiModelId} placement="top" classNames={{ placeholder: 'min-w-0' }}>
+              <p tabIndex={0} aria-describedby={apiModelIdId} className={modelSyncClasses.manageRowTitle}>
+                {model.name || apiModelId}
+              </p>
+            </Tooltip>
+          )}
           <span id={apiModelIdId} className="sr-only">
             {apiModelId}
           </span>
@@ -121,7 +139,13 @@ const ModelRowIdentity = memo(function ModelRowIdentity({
         </div>
       </div>
       <div className={modelSyncClasses.fetchCapabilityStrip}>
-        <ModelTagsWithLabel model={model} provider={provider} size={12} style={{ flexWrap: 'nowrap' }} />
+        <ModelTagsWithLabel
+          model={model}
+          provider={provider}
+          size={12}
+          showTooltip={!piOptimized}
+          style={CAPABILITY_TAG_STYLE}
+        />
       </div>
     </>
   )
@@ -226,8 +250,13 @@ export default function ModelSyncPreviewPanel(props: ModelSyncPreviewPanelProps)
     searchActive = false,
     flattenSingleGroup = false
   } = props
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
+  const piOptimized = isPiMode()
+  const [groupCollapseOverrides, setGroupCollapseOverrides] = useState<Record<string, boolean>>({})
   const entries = useMemo(() => Object.entries(modelGroups).filter(([, models]) => models.length > 0), [modelGroups])
+  const totalModelCount = useMemo(() => entries.reduce((sum, [, models]) => sum + models.length, 0), [entries])
+  const collapseExtraGroupsByDefault =
+    piOptimized && totalModelCount > LARGE_SYNC_LIST_MODEL_THRESHOLD && entries.length > 1
+
   const virtualRows = useMemo<ManageVirtualRow[]>(() => {
     if (flattenSingleGroup && entries.length === 1) {
       return entries[0][1].map(
@@ -239,8 +268,9 @@ export default function ModelSyncPreviewPanel(props: ModelSyncPreviewPanelProps)
       )
     }
 
-    return entries.flatMap(([groupName, models]) => {
-      const collapsed = !searchActive && collapsedGroups.has(groupName)
+    return entries.flatMap(([groupName, models], groupIndex) => {
+      const defaultCollapsed = collapseExtraGroupsByDefault && groupIndex > 0
+      const collapsed = !searchActive && (groupCollapseOverrides[groupName] ?? defaultCollapsed)
       const groupLabel = getModelGroupLabel(groupName, t)
       const groupRow: ManageVirtualRow = {
         key: `group:${groupName}`,
@@ -266,19 +296,18 @@ export default function ModelSyncPreviewPanel(props: ModelSyncPreviewPanelProps)
         )
       ]
     })
-  }, [collapsedGroups, entries, flattenSingleGroup, searchActive, t])
+  }, [collapseExtraGroupsByDefault, entries, flattenSingleGroup, groupCollapseOverrides, searchActive, t])
 
-  const toggleGroup = useCallback((groupName: string) => {
-    setCollapsedGroups((current) => {
-      const next = new Set(current)
-      if (next.has(groupName)) {
-        next.delete(groupName)
-      } else {
-        next.add(groupName)
-      }
-      return next
-    })
+  const toggleGroup = useCallback((groupName: string, currentlyCollapsed: boolean) => {
+    setGroupCollapseOverrides((current) => ({
+      ...current,
+      [groupName]: !currentlyCollapsed
+    }))
   }, [])
+
+  const isStickyRow = useCallback((index: number) => virtualRows[index]?.type === 'group', [virtualRows])
+  const getRowKey = useCallback((index: number) => virtualRows[index]?.key ?? index, [virtualRows])
+  const estimateRowSize = useCallback(() => 44, [])
 
   const renderGroupAction = (models: Model[], groupLabel: string) => {
     if (props.mode === 'select') {
@@ -356,11 +385,11 @@ export default function ModelSyncPreviewPanel(props: ModelSyncPreviewPanelProps)
       className={modelSyncClasses.manageScrollArea}
       contentProps={{ className: 'pr-1' }}
       role="list"
-      estimateSize={() => 44}
+      estimateSize={estimateRowSize}
       itemContainerStyle={{ height: 44 }}
-      overscan={5}
-      isSticky={(index) => virtualRows[index]?.type === 'group'}
-      getItemKey={(index) => virtualRows[index]?.key ?? index}>
+      overscan={piOptimized ? 2 : 5}
+      isSticky={isStickyRow}
+      getItemKey={getRowKey}>
       {(row) => {
         if (row.type === 'group') {
           return (
@@ -374,7 +403,7 @@ export default function ModelSyncPreviewPanel(props: ModelSyncPreviewPanelProps)
                   type="button"
                   className={modelSyncClasses.manageGroupToggle}
                   aria-expanded={!row.collapsed}
-                  onClick={() => toggleGroup(row.groupName)}>
+                  onClick={() => toggleGroup(row.groupName, row.collapsed)}>
                   <ChevronRight
                     className={cn(modelSyncClasses.manageGroupChevron, !row.collapsed && 'rotate-90')}
                     aria-hidden

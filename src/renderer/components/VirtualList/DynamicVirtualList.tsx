@@ -176,6 +176,10 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
     ...restOptions
   } = props
 
+  const isPiOptimized = typeof window !== 'undefined' && Boolean(window.api?.isPiOptimized)
+  const effectiveIsSticky = isPiOptimized ? undefined : isSticky
+  const effectiveOverscan = isPiOptimized ? Math.min(restOptions.overscan ?? 2, 2) : restOptions.overscan
+
   const internalScrollerRef = useRef<HTMLDivElement>(null)
   const setScrollerRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -225,7 +229,7 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
     externalScrollElement,
     usesExternalScroll,
     horizontal,
-    isSticky,
+    effectiveIsSticky,
     header,
     measuresContentOffset,
     contentProps?.className,
@@ -235,9 +239,9 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
   const activeStickyIndexesRef = useRef<number[]>([])
 
   const stickyIndexes = useMemo(() => {
-    if (!isSticky) return []
-    return list.map((_, index) => (isSticky(index) ? index : -1)).filter((index) => index !== -1)
-  }, [list, isSticky])
+    if (!effectiveIsSticky) return []
+    return list.map((_, index) => (effectiveIsSticky(index) ? index : -1)).filter((index) => index !== -1)
+  }, [list, effectiveIsSticky])
 
   const internalStickyRangeExtractor = useCallback(
     (range: Range) => {
@@ -291,7 +295,7 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
     [stickyIndexes, getItemDepth]
   )
 
-  const baseRangeExtractor = customRangeExtractor ?? (isSticky ? internalStickyRangeExtractor : undefined)
+  const baseRangeExtractor = customRangeExtractor ?? (effectiveIsSticky ? internalStickyRangeExtractor : undefined)
   const rangeExtractorWithKeptIndexes = useCallback(
     (range: Range) => {
       const extracted = baseRangeExtractor?.(range) ?? defaultRangeExtractor(range)
@@ -305,6 +309,7 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
 
   const virtualizer = useVirtualizer({
     ...restOptions,
+    overscan: effectiveOverscan,
     count: list.length,
     getScrollElement: () => (usesExternalScroll ? externalScrollElement : internalScrollerRef.current),
     scrollMargin,
@@ -349,7 +354,7 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
   const viewportProps = {
     ...scrollerProps,
     ref: setScrollerRef,
-    className: cn('dynamic-virtual-list', isSticky && 'isolate', className),
+    className: cn('dynamic-virtual-list', effectiveIsSticky && 'isolate', className),
     role,
     onScroll,
     style: scrollerStyle
@@ -362,7 +367,7 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
         ref={contentRef}
         style={{
           position: 'relative',
-          ...(isSticky && { display: 'flex', flexDirection: horizontal ? 'row' : 'column' }),
+          ...(effectiveIsSticky && { display: 'flex', flexDirection: horizontal ? 'row' : 'column' }),
           width: horizontal ? `${totalSize}px` : '100%',
           height: !horizontal ? `${totalSize}px` : '100%'
         }}>
@@ -408,6 +413,7 @@ function DynamicVirtualList<T>(props: DynamicVirtualListProps<T>) {
 
           const style: React.CSSProperties = {
             ...itemContainerStyle,
+            ...(isPiOptimized && { contain: 'layout style' }),
             position: isItemClamped ? 'sticky' : 'absolute',
             top: horizontal || !isItemClamped ? 0 : stickyOffset,
             left: horizontal && isItemClamped ? stickyOffset : 0,

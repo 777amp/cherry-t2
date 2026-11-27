@@ -15,10 +15,6 @@ module.exports = {
       {
         target: 'deb',
         arch: ['arm64']
-      },
-      {
-        target: 'AppImage',
-        arch: ['arm64']
       }
     ],
     maintainer: '777amp <https://github.com/777amp/cherry-t2>',

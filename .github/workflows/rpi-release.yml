@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   build-and-release:
-    name: Build & Release Debian 13 ARM64 (.deb + .AppImage)
+    name: Build & Release Debian 13 ARM64 (.deb)
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
@@ -67,8 +67,7 @@ jobs:
             libxtst-dev \
             libx11-dev \
             libxfixes-dev \
-            libwayland-dev \
-            libfuse2t64 || sudo apt-get install -y libfuse2
+            libwayland-dev
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -89,11 +88,11 @@ jobs:
       - name: Ensure postinst script is executable
         run: chmod +x build/linux/postinst.sh scripts/install-rpi.sh
 
-      - name: Package Debian 13 ARM64 (.deb and .AppImage)
+      - name: Package Debian 13 ARM64 (.deb)
         run: |
           pnpm exec electron-builder \
             --config electron-builder.rpi.config.cjs \
-            --linux deb AppImage \
+            --linux deb \
             --arm64 \
             --publish never
         env:
@@ -106,7 +105,6 @@ jobs:
         run: |
           mkdir -p release-assets
           cp dist/*-rpi-arm64.deb release-assets/
-          cp dist/*-rpi-arm64.AppImage release-assets/
           (cd release-assets && sha256sum * > SHA256SUMS.txt)
           ls -lh release-assets/
           cat release-assets/SHA256SUMS.txt
@@ -121,11 +119,9 @@ jobs:
           fi
 
           DEB_NAME="$(basename release-assets/*-rpi-arm64.deb)"
-          APPIMAGE_NAME="$(basename release-assets/*-rpi-arm64.AppImage)"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
           echo "deb_name=${DEB_NAME}" >> "$GITHUB_OUTPUT"
-          echo "appimage_name=${APPIMAGE_NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release with install instructions
         env:
@@ -133,7 +129,6 @@ jobs:
           TAG: ${{ steps.artifacts.outputs.tag }}
           VERSION: ${{ steps.artifacts.outputs.version }}
           DEB_NAME: ${{ steps.artifacts.outputs.deb_name }}
-          APPIMAGE_NAME: ${{ steps.artifacts.outputs.appimage_name }}
           PRERELEASE: ${{ inputs.prerelease }}
         run: |
           cat > release-notes.md <<EOF
@@ -141,8 +136,8 @@ jobs:
 
           Heavily optimized for **Raspberry Pi 4B (2GB / 4GB / 8GB)** running **Debian 13 (Trixie, aarch64)**:
           - **Lazy Window Pools**: Eliminates 3 eagerly pre-warmed hidden Electron renderers (~300–600 MB RAM saved at launch) and reclaims idle windows after 60s.
-          - **V8 & Chromium Memory Caps**: Auto-scales V8 heap (\`512MB\` / \`1024MB\` / \`1536MB\` by board RAM), caps renderer processes and disk/media caches, and disables \`/dev/shm\` pressure.
-          - **Wayland + VideoCore VI (Mesa V3D) Tuning**: Auto-selects Wayland/X11 (\`--ozone-platform-hint=auto\`), bounds raster threads to 2, strips expensive \`backdrop-filter\` blurs/heavy transitions, and provides a \`CHERRY_PI_SOFTWARE_GL=1\` fallback.
+          - **V8 & Chromium Memory Caps**: Auto-scales V8 heap (\`512MB\` / \`1024MB\` / \`1536MB\` by board RAM), caps renderer processes and disk/media caches, and keeps \`/dev/shm\` in RAM.
+          - **Wayland + VideoCore VI (Mesa V3D) Tuning**: Auto-selects Wayland/X11 (\`--ozone-platform-hint=auto\`), bounds raster threads to 2, uses CPU rasterization with GPU compositing, strips blurs/shadows/animations, and provides a \`CHERRY_PI_SOFTWARE_GL=1\` fallback.
           - **microSD-Friendly SQLite**: Configures \`temp_store=MEMORY\`, bounded 16 MB page cache, 64 MB mmap, and tuned WAL checkpoints.
           - **Debian 13 Ready**: \`t64\`-compatible \`.deb\` dependencies and automatic \`chrome-sandbox\` SUID setup.
 
@@ -162,14 +157,6 @@ jobs:
           curl -fLO https://github.com/${{ github.repository }}/releases/download/${TAG}/${DEB_NAME}
           sudo apt-get update && sudo apt-get install -y ./${DEB_NAME}
           cherry-studio
-          \`\`\`
-
-          ### Portable AppImage (No \`sudo\` Required)
-
-          \`\`\`bash
-          curl -fLO https://github.com/${{ github.repository }}/releases/download/${TAG}/${APPIMAGE_NAME}
-          chmod +x ${APPIMAGE_NAME}
-          ./${APPIMAGE_NAME}
           \`\`\`
 
           ### Runtime Environment Toggles

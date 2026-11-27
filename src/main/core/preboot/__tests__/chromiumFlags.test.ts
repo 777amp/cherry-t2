@@ -22,6 +22,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 interface PlatformFlags {
   isLinux: boolean
   isWin: boolean
+  isPiOptimized?: boolean
+  totalMemoryMB?: number
 }
 
 const disableHardwareAccelerationMock = vi.fn()
@@ -49,7 +51,9 @@ function stubConstants(flags: PlatformFlags) {
     isWin: flags.isWin,
     isPortable: false,
     isMac: !flags.isLinux && !flags.isWin,
-    isDev: false
+    isDev: false,
+    isPiOptimized: flags.isPiOptimized ?? false,
+    totalMemoryMB: flags.totalMemoryMB ?? 8192
   }))
 }
 
@@ -161,7 +165,7 @@ describe('configureChromiumFlags', () => {
       const { configureChromiumFlags } = await loadModule()
       configureChromiumFlags()
 
-      expect(appendSwitchMock).toHaveBeenCalledWith('enable-features', 'GlobalShortcutsPortal')
+      expect(appendSwitchMock).toHaveBeenCalledWith('enable-features', expect.stringContaining('GlobalShortcutsPortal'))
       expect(appendSwitchMock).toHaveBeenCalledWith('class', 'CherryStudio')
       expect(appendSwitchMock).toHaveBeenCalledWith('name', 'CherryStudio')
     })
@@ -177,7 +181,43 @@ describe('configureChromiumFlags', () => {
       expect(appendSwitchMock).not.toHaveBeenCalledWith('wm-window-animations-disabled')
       expect(appendSwitchMock).not.toHaveBeenCalledWith('class', 'CherryStudio')
       expect(appendSwitchMock).not.toHaveBeenCalledWith('name', 'CherryStudio')
-      expect(appendSwitchMock).not.toHaveBeenCalledWith('enable-features', 'GlobalShortcutsPortal')
+      expect(appendSwitchMock).not.toHaveBeenCalledWith(
+        'enable-features',
+        expect.stringContaining('GlobalShortcutsPortal')
+      )
+    })
+  })
+
+  describe('Raspberry Pi optimizations', () => {
+    it('keeps V8 JIT fast (no --optimize-for-size) and disables GPU rasterization by default on Pi', async () => {
+      stubConstants({ isLinux: true, isWin: false, isPiOptimized: true, totalMemoryMB: 4096 })
+      stubElectron()
+      stubBootConfig()
+
+      const { configureChromiumFlags } = await loadModule()
+      configureChromiumFlags()
+
+      expect(appendSwitchMock).toHaveBeenCalledWith('js-flags', '--max-old-space-size=1024')
+      expect(appendSwitchMock).toHaveBeenCalledWith('disable-gpu-rasterization')
+      expect(appendSwitchMock).not.toHaveBeenCalledWith('enable-gpu-rasterization')
+      expect(appendSwitchMock).not.toHaveBeenCalledWith(
+        'disable-features',
+        expect.stringContaining('CalculateNativeWinOcclusion')
+      )
+    })
+
+    it('allows opting back into GPU rasterization via CHERRY_PI_GPU_RASTER=1', async () => {
+      vi.stubEnv('CHERRY_PI_GPU_RASTER', '1')
+      stubConstants({ isLinux: true, isWin: false, isPiOptimized: true, totalMemoryMB: 4096 })
+      stubElectron()
+      stubBootConfig()
+
+      const { configureChromiumFlags } = await loadModule()
+      configureChromiumFlags()
+
+      expect(appendSwitchMock).toHaveBeenCalledWith('enable-gpu-rasterization')
+      expect(appendSwitchMock).toHaveBeenCalledWith('ignore-gpu-blocklist')
+      expect(appendSwitchMock).not.toHaveBeenCalledWith('disable-gpu-rasterization')
     })
   })
 

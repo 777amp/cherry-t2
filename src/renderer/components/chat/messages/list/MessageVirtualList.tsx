@@ -127,7 +127,7 @@ export function MessageVirtualList<T>({
   getItemKey,
   renderItem,
   estimateSize,
-  overscan = 6,
+  overscan = typeof window !== 'undefined' && window.api?.isPiOptimized ? 2 : 6,
   onReachTop,
   hasMoreTop = false,
   handleRef,

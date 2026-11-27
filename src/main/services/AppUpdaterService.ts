@@ -13,7 +13,7 @@ import { computeBackoff } from '@main/core/job/runtime/backoff'
 import { BaseService, DependsOn, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
 import { logFailure } from '@main/core/logger/logFailure'
 import { isMacElectronBridgePackage } from '@main/core/macElectronBridge'
-import { isWin } from '@main/core/platform'
+import { isPiOptimized, isWin } from '@main/core/platform'
 import { WindowType } from '@main/core/window/types'
 import { getAppLanguage, t } from '@main/i18n'
 import { regionService } from '@main/services/RegionService'
@@ -126,7 +126,7 @@ const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000
 // the same time don't all hit the update server on the same beat.
 const CHECK_JITTER_RATIO = 0.15
 // Short delay before the first check after startup, letting boot I/O settle.
-const INITIAL_CHECK_DELAY_MS = 5_000
+const INITIAL_CHECK_DELAY_MS = isPiOptimized ? 120_000 : 5_000
 // Backoff for consecutive check failures: 5/10/20/40min, capped at 60min — always
 // shorter than the normal cadence so a transient failure recovers sooner. Note
 // `computeBackoff` ignores `maxAttempts`; auto-check never gives up, so it is a

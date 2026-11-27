@@ -82,6 +82,14 @@ export function useSmoothScrollAnimation(
       // requested target rather than queueing them.
       if (rafIdRef.current != null) cancelFrame(rafIdRef.current)
 
+      if (typeof window !== 'undefined' && window.api?.isPiOptimized) {
+        el.scrollTop = getTargetOffset()
+        animatingRef.current = false
+        rafIdRef.current = null
+        options.onComplete?.()
+        return
+      }
+
       const frames = Math.max(1, options.frames ?? DEFAULT_FRAMES)
       const easing = options.easing ?? DEFAULT_EASING
       const onComplete = options.onComplete

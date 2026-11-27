@@ -2,9 +2,10 @@ import { artifactService } from '@data/services/ArtifactService'
 import { loggerService } from '@logger'
 import { createInFlightWorkTracker } from '@main/core/concurrency/inFlightWork'
 import { BaseService, type Disposable, Injectable, Phase, ServicePhase, toDisposable } from '@main/core/lifecycle'
+import { isPiOptimized } from '@main/core/platform'
 
 const logger = loggerService.withContext('ArtifactBackfillService')
-const STARTUP_DELAY_MS = 5_000
+const STARTUP_DELAY_MS = isPiOptimized ? 60_000 : 5_000
 
 /** Rebuilds the index from stored declarations. The index and journal commit together. */
 export async function backfillPastOutputs(signal?: AbortSignal): Promise<void> {

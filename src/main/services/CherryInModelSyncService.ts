@@ -4,6 +4,7 @@ import { application } from '@application'
 import { loggerService } from '@logger'
 import { listModels } from '@main/ai/provider/listModels'
 import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
+import { isPiOptimized } from '@main/core/platform'
 import { notifyDataApiDataChange } from '@main/data/dataApiDataChange'
 import { modelService } from '@main/data/services/ModelService'
 import { providerService } from '@main/data/services/ProviderService'
@@ -12,6 +13,7 @@ import { SystemProviderIds } from '@shared/utils/systemProviderId'
 
 const logger = loggerService.withContext('CherryInModelSyncService')
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const INITIAL_CHECK_DELAY_MS = isPiOptimized ? 120_000 : 30_000
 const LAST_ATTEMPT_KEY = 'cherryin.models.last_attempt_at'
 
 @Injectable('CherryInModelSyncService')
@@ -25,7 +27,7 @@ export class CherryInModelSyncService extends BaseService {
     const initial = setTimeout(() => {
       void this.check()
       this.registerInterval(() => this.check(), CHECK_INTERVAL_MS)
-    }, 30_000)
+    }, INITIAL_CHECK_DELAY_MS)
     initial.unref()
     this.registerDisposable(() => clearTimeout(initial))
   }

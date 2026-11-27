@@ -5,7 +5,8 @@ const platform = vi.hoisted(() => ({
   isMac: false,
   isWin: false,
   isLinux: false,
-  isDev: false
+  isDev: false,
+  isPiOptimized: false
 }))
 vi.mock('@main/core/platform', () => platform)
 

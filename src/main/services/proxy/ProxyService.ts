@@ -6,6 +6,7 @@ import { application } from '@application'
 import { loggerService } from '@logger'
 import { createLatestReconciler } from '@main/core/concurrency/latestReconciler'
 import { BaseService, type Disposable, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
+import { isPiOptimized } from '@main/core/platform'
 import type { ProxyMode, UnifiedPreferenceKeyType } from '@shared/data/preference/preferenceTypes'
 import { WEBVIEW_SECURITY_PARTITIONS } from '@shared/utils/webviewSecurity'
 
@@ -317,7 +318,10 @@ export class ProxyService extends BaseService {
 
   private ensureSystemProxyMonitor(): void {
     if (this.systemProxyInterval) return
-    this.systemProxyInterval = this.registerInterval(() => this.proxyReconciler.request(), 1000 * 60)
+    this.systemProxyInterval = this.registerInterval(
+      () => this.proxyReconciler.request(),
+      isPiOptimized ? 1000 * 60 * 5 : 1000 * 60
+    )
   }
 
   private clearSystemProxyMonitor(): void {

@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+
 import { app } from 'electron'
 
 import { isLinux, isLinuxWayland, isPiOptimized, isWin, totalMemoryMB } from '@main/core/platform'
@@ -32,6 +34,16 @@ function getPiV8HeapLimitMB(): number {
   if (totalMemoryMB <= 2560) return 512
   if (totalMemoryMB <= 4608) return 1024
   return 1536
+}
+
+/** Only fall back to /tmp when /dev/shm is missing or container-tiny (<128 MB). */
+function isDevShmSmall(): boolean {
+  try {
+    const stats = fs.statfsSync('/dev/shm')
+    return stats.bsize * stats.blocks < 128 * 1024 * 1024
+  } catch {
+    return true
+  }
 }
 
 export function configureChromiumFlags(): void {
@@ -85,23 +97,29 @@ export function configureChromiumFlags(): void {
     }
 
     const heapLimitMB = getPiV8HeapLimitMB()
-    app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${heapLimitMB} --optimize-for-size`)
+    app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${heapLimitMB}`)
     app.commandLine.appendSwitch('renderer-process-limit', '3')
     app.commandLine.appendSwitch('num-raster-threads', '2')
     app.commandLine.appendSwitch('disk-cache-size', String(50 * 1024 * 1024))
     app.commandLine.appendSwitch('media-cache-size', String(25 * 1024 * 1024))
-    app.commandLine.appendSwitch('disable-dev-shm-usage')
+    if (isDevShmSmall()) {
+      app.commandLine.appendSwitch('disable-dev-shm-usage')
+    }
     app.commandLine.appendSwitch('disable-smooth-scrolling')
     app.commandLine.appendSwitch('disable-background-networking')
     app.commandLine.appendSwitch('disable-component-update')
-    app.commandLine.appendSwitch('disable-features', 'BackForwardCache,MediaRouter,CalculateNativeWinOcclusion')
+    app.commandLine.appendSwitch('disable-features', 'BackForwardCache,MediaRouter,HardwareMediaKeyHandling')
 
     if (!forceSoftwareGL && !bootConfigService.get('app.disable_hardware_acceleration')) {
-      app.commandLine.appendSwitch('enable-gpu-rasterization')
-      app.commandLine.appendSwitch('ignore-gpu-blocklist')
+      if (process.env.CHERRY_PI_GPU_RASTER === '1') {
+        app.commandLine.appendSwitch('enable-gpu-rasterization')
+        app.commandLine.appendSwitch('ignore-gpu-blocklist')
+      } else {
+        // Keep GPU compositing on Mesa V3D but rasterize tiles on CPU to avoid VideoCore VI shader stalls.
+        app.commandLine.appendSwitch('disable-gpu-rasterization')
+      }
     }
   }
 
   app.commandLine.appendSwitch('enable-features', enableFeatures.join(','))
 }
-

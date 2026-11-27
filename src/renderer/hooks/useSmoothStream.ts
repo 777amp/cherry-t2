@@ -125,6 +125,12 @@ export const useSmoothStream = ({
   })
 
   const addChunk = useCallback((chunk: string) => {
+    if (!chunk) return
+    if (typeof window !== 'undefined' && window.api?.isPiOptimized) {
+      displayedTextRef.current += chunk
+      onUpdateRef.current(displayedTextRef.current)
+      return
+    }
     const chars = Array.from(segmenter.segment(chunk)).map((s) => s.segment)
     if (chars.length === 0) return
     const now = performance.now()
@@ -189,6 +195,15 @@ export const useSmoothStream = ({
    */
   const update = useCallback(
     (accumulated: string, isComplete: boolean) => {
+      if (typeof window !== 'undefined' && window.api?.isPiOptimized) {
+        lastAccumulatedRef.current = accumulated
+        if (displayedTextRef.current !== accumulated) {
+          displayedTextRef.current = accumulated
+          onUpdateRef.current(accumulated)
+        }
+        if (isComplete && externalStreamDone === undefined) setInternalStreamDone(true)
+        return
+      }
       if (accumulated.startsWith(lastAccumulatedRef.current)) {
         const delta = accumulated.slice(lastAccumulatedRef.current.length)
         lastAccumulatedRef.current = accumulated

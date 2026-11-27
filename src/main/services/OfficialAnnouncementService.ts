@@ -4,6 +4,7 @@ import * as z from 'zod'
 import { application } from '@application'
 import { loggerService } from '@logger'
 import { BaseService, DependsOn, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
+import { isPiOptimized } from '@main/core/platform'
 
 const logger = loggerService.withContext('OfficialAnnouncementService')
 const SCHEDULE_ID = 'official-announcement:poll'
@@ -65,7 +66,7 @@ export class OfficialAnnouncementService extends BaseService {
     application.get('SchedulerService').unregister(SCHEDULE_ID)
   }
 
-  private configure(delayMs = 5000): void {
+  private configure(delayMs = isPiOptimized ? 120_000 : 5000): void {
     this.cancel()
     if (!this.ready || !application.get('PreferenceService').get('app.notification.center.official.enabled')) return
     this.hasChecked = false

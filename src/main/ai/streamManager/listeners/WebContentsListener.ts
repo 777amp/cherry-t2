@@ -1,6 +1,7 @@
 import type { UIMessageChunk } from 'ai'
 
 import { application } from '@application'
+import { isPiOptimized } from '@main/core/platform'
 import { projectStreamChunkForRenderer } from '@main/utils/messageOutputProjection'
 import type { UniqueModelId } from '@shared/data/types/model'
 import type { IpcEventName } from '@shared/ipc/schemas/ipcSchemas'
@@ -9,8 +10,8 @@ import { IpcChannel } from '@shared/IpcChannel'
 
 import type { StreamDoneResult, StreamErrorResult, StreamListener, StreamPausedResult } from '../types'
 
-const COALESCE_WINDOW_MS = 16
-const MAX_COALESCE_AGE_MS = 16
+const COALESCE_WINDOW_MS = isPiOptimized ? 64 : 16
+const MAX_COALESCE_AGE_MS = isPiOptimized ? 80 : 16
 const MAX_COALESCE_CHARS = 2048
 
 /** Id prefix for renderer (WebContents) listeners — full form `wc:${wc.id}:${topicId}`. */

@@ -90,7 +90,8 @@ export const WINDOW_TYPE_REGISTRY: Partial<Record<WindowType, WindowTypeMetadata
         webSecurity: false,
         webviewTag: true,
         allowRunningInsecureContent: true,
-        backgroundThrottling: false
+        backgroundThrottling: false,
+        spellcheck: !isPiOptimized
         // zoomFactor depends on PreferenceService → injected via args.options
       }
     },

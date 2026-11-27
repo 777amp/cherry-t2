@@ -12,6 +12,7 @@ import {
 } from '@cherrystudio/provider-registry/node'
 import { loggerService } from '@logger'
 import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
+import { isPiOptimized } from '@main/core/platform'
 import { notifyDataApiDataChange } from '@main/data/dataApiDataChange'
 import { providerRegistryService } from '@main/data/services/ProviderRegistryService'
 import { probeOverrideSnapshot, readActiveOverrideManifest } from '@main/data/services/utils/registryDataPaths'
@@ -61,7 +62,7 @@ const REGISTRY_DATA_CHANGE_EFFECTS = [
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 // Short delay before the first check, letting boot I/O settle. registerInterval
 // only fires after one full interval, so the initial pull is scheduled separately.
-const INITIAL_CHECK_DELAY_MS = 30_000
+const INITIAL_CHECK_DELAY_MS = isPiOptimized ? 120_000 : 30_000
 
 function hasOverrideFallback(): boolean {
   return providerRegistryService.getRegistryFallbacks().some(({ namespace }) => namespace === 'override')

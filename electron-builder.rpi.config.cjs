@@ -52,9 +52,11 @@ module.exports = {
       'libdrm2'
     ]
   },
-  publish: {
-    provider: 'github',
-    owner: '777amp',
-    repo: 'cherry-t2'
-  }
+  publish: [
+    {
+      provider: 'github',
+      owner: '777amp',
+      repo: 'cherry-t2'
+    }
+  ]
 }

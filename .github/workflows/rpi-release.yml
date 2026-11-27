@@ -1,0 +1,199 @@
+name: Build & Release (Raspberry Pi 4B ARM64)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (e.g. v2.2.3-rpi.1). Defaults to v<package.json version>-rpi.<run_number>"
+        required: false
+        default: ""
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rpi-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    name: Build & Release Debian 13 ARM64 (.deb + .AppImage)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".node-version"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: linux-arm64-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            linux-arm64-pnpm-
+
+      - name: Install Linux ARM64 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            python3 \
+            pkg-config \
+            libglib2.0-dev \
+            libgdk-pixbuf-2.0-dev \
+            libevdev-dev \
+            libxtst-dev \
+            libx11-dev \
+            libxfixes-dev \
+            libwayland-dev \
+            libfuse2t64 || sudo apt-get install -y libfuse2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache verified Linux SQLite native addon
+        uses: actions/cache@v4
+        with:
+          path: scripts/linux-native/prebuilt
+          key: linux-sqlite-arm64-${{ hashFiles('pnpm-lock.yaml', 'scripts/linux-native/compat.js', 'scripts/linux-native/download.js', 'scripts/linux-native/release.json', 'patches/**') }}
+
+      - name: Build application (main, preload, renderer, utility processes)
+        run: |
+          pnpm exec dotenv -v CHERRY_EDITION=global -- electron-vite build
+          pnpm run build:utility-process
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Ensure postinst script is executable
+        run: chmod +x build/linux/postinst.sh scripts/install-rpi.sh
+
+      - name: Package Debian 13 ARM64 (.deb and .AppImage)
+        run: |
+          pnpm exec electron-builder \
+            --config electron-builder.rpi.config.cjs \
+            --linux deb AppImage \
+            --arm64 \
+            --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Collect release artifacts & generate SHA256SUMS
+        id: artifacts
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp dist/*-rpi-arm64.deb release-assets/
+          cp dist/*-rpi-arm64.AppImage release-assets/
+          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+          ls -lh release-assets/
+          cat release-assets/SHA256SUMS.txt
+
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          elif [[ -n "${{ inputs.release_tag }}" ]]; then
+            TAG="${{ inputs.release_tag }}"
+          else
+            TAG="v${PKG_VERSION}-rpi.${{ github.run_number }}"
+          fi
+
+          DEB_NAME="$(basename release-assets/*-rpi-arm64.deb)"
+          APPIMAGE_NAME="$(basename release-assets/*-rpi-arm64.AppImage)"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "deb_name=${DEB_NAME}" >> "$GITHUB_OUTPUT"
+          echo "appimage_name=${APPIMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release with install instructions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.artifacts.outputs.tag }}
+          VERSION: ${{ steps.artifacts.outputs.version }}
+          DEB_NAME: ${{ steps.artifacts.outputs.deb_name }}
+          APPIMAGE_NAME: ${{ steps.artifacts.outputs.appimage_name }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          cat > release-notes.md <<EOF
+          ## Cherry Studio ${VERSION} — Raspberry Pi 4B (Debian 13 / Trixie ARM64)
+
+          Heavily optimized for **Raspberry Pi 4B (2GB / 4GB / 8GB)** running **Debian 13 (Trixie, aarch64)**:
+          - **Lazy Window Pools**: Eliminates 3 eagerly pre-warmed hidden Electron renderers (~300–600 MB RAM saved at launch) and reclaims idle windows after 60s.
+          - **V8 & Chromium Memory Caps**: Auto-scales V8 heap (\`512MB\` / \`1024MB\` / \`1536MB\` by board RAM), caps renderer processes and disk/media caches, and disables \`/dev/shm\` pressure.
+          - **Wayland + VideoCore VI (Mesa V3D) Tuning**: Auto-selects Wayland/X11 (\`--ozone-platform-hint=auto\`), bounds raster threads to 2, strips expensive \`backdrop-filter\` blurs/heavy transitions, and provides a \`CHERRY_PI_SOFTWARE_GL=1\` fallback.
+          - **microSD-Friendly SQLite**: Configures \`temp_store=MEMORY\`, bounded 16 MB page cache, 64 MB mmap, and tuned WAL checkpoints.
+          - **Debian 13 Ready**: \`t64\`-compatible \`.deb\` dependencies and automatic \`chrome-sandbox\` SUID setup.
+
+          ---
+
+          ### Quick Install (Debian 13 / Raspberry Pi OS 64-bit)
+
+          Copy and run this in your Raspberry Pi terminal to download, verify, and install the \`.deb\` package:
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-rpi.sh | bash
+          \`\`\`
+
+          Or download and install this exact release manually:
+
+          \`\`\`bash
+          curl -fLO https://github.com/${{ github.repository }}/releases/download/${TAG}/${DEB_NAME}
+          sudo apt-get update && sudo apt-get install -y ./${DEB_NAME}
+          cherry-studio
+          \`\`\`
+
+          ### Portable AppImage (No \`sudo\` Required)
+
+          \`\`\`bash
+          curl -fLO https://github.com/${{ github.repository }}/releases/download/${TAG}/${APPIMAGE_NAME}
+          chmod +x ${APPIMAGE_NAME}
+          ./${APPIMAGE_NAME}
+          \`\`\`
+
+          ### Runtime Environment Toggles
+
+          \`\`\`bash
+          # Force software rendering if you see GPU glitches on your compositor:
+          CHERRY_PI_SOFTWARE_GL=1 cherry-studio
+
+          # Disable Pi optimization profile:
+          CHERRY_PI_MODE=0 cherry-studio
+          \`\`\`
+          EOF
+
+          FLAGS=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            FLAGS+=(--prerelease)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+            gh release edit "$TAG" --title "Cherry Studio ${VERSION} (Raspberry Pi 4B / Debian 13 ARM64)" --notes-file release-notes.md "${FLAGS[@]}"
+          else
+            gh release create "$TAG" release-assets/* \
+              --title "Cherry Studio ${VERSION} (Raspberry Pi 4B / Debian 13 ARM64)" \
+              --notes-file release-notes.md \
+              "${FLAGS[@]}"
+          fi

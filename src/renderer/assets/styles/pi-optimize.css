@@ -1,0 +1,23 @@
+/*
+ * Raspberry Pi 4B / low-power ARM64 GPU optimizations (VideoCore VI / Mesa V3D).
+ * Applied automatically when `html.pi-optimized` is active.
+ */
+
+html.pi-optimized body {
+  text-rendering: optimizeSpeed;
+  transition: none !important;
+}
+
+/* Disable backdrop-filter blurs — the single largest GPU stall on VideoCore VI */
+html.pi-optimized *,
+html.pi-optimized *::before,
+html.pi-optimized *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Trim heavy transitions and shadows for snappy 60Hz rendering on Pi 4B */
+html.pi-optimized * {
+  scroll-behavior: auto !important;
+  transition-duration: 0.05s !important;
+}

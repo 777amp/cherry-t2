@@ -1,0 +1,159 @@
+/**
+ * Message parts contexts — extracted to avoid circular imports.
+ *
+ * PartsContext is the primary data source for message rendering.
+ * Components read parts directly via useMessageParts / usePartsMap.
+ */
+
+import type { ReactNode } from 'react'
+import { createContext, use, useMemo } from 'react'
+
+import { type MessagePartRows, messagePartsAt } from '@renderer/utils/message/messagePartRows'
+import type { CherryMessagePart } from '@shared/data/types/message'
+
+// Parts Context — primary message rendering data source
+// ============================================================================
+
+/**
+ * Parts context — provides raw CherryMessagePart[] keyed by message ID.
+ * Null when no parts provider is present.
+ */
+export const PartsContext = createContext<MessagePartRows | null>(null)
+
+type PartsMap = MessagePartRows | null
+const EMPTY_MESSAGE_PARTS: CherryMessagePart[] = []
+interface MessagePartsScopeValue {
+  messageId: string
+  parts: CherryMessagePart[]
+  partsMap: MessagePartRows
+}
+
+const MessagePartsScopeContext = createContext<MessagePartsScopeValue | null>(null)
+const ToolPartScopeContext = createContext<PartsMap>(null)
+const MessageIdContext = createContext<string | undefined>(undefined)
+
+/**
+ * Provide the complete parts map. A nested message scope takes precedence for
+ * useMessageParts; resetting it here prevents an outer message scope leaking
+ * into an intentionally isolated nested provider.
+ */
+export function PartsProvider({ value, children }: { value: PartsMap; children: ReactNode }) {
+  return (
+    <PartsContext value={value}>
+      <ToolPartScopeContext value={null}>
+        <MessagePartsScopeContext value={null}>{children}</MessagePartsScopeContext>
+      </ToolPartScopeContext>
+    </PartsContext>
+  )
+}
+
+/** Provide one message's parts without subscribing its subtree to the complete map. */
+export function MessagePartsScopeProvider({
+  messageId,
+  parts,
+  children
+}: {
+  messageId: string
+  parts: CherryMessagePart[]
+  children: ReactNode
+}) {
+  const value = useMemo(() => ({ messageId, parts, partsMap: { [messageId]: parts } }), [messageId, parts])
+  return (
+    <MessageIdContext value={messageId}>
+      <ToolPartScopeContext value={null}>
+        <MessagePartsScopeContext value={value}>{children}</MessagePartsScopeContext>
+      </ToolPartScopeContext>
+    </MessageIdContext>
+  )
+}
+
+/** Keep one tool's approval and result consumers independent of sibling text updates. */
+export function ToolPartScopeProvider({
+  messageId,
+  part,
+  children
+}: {
+  messageId: string | undefined
+  part: CherryMessagePart | undefined
+  children: ReactNode
+}) {
+  const value = useMemo(() => (messageId && part ? { [messageId]: [part] } : null), [messageId, part])
+  return <ToolPartScopeContext value={value}>{children}</ToolPartScopeContext>
+}
+
+/** Read the parts map from context (null when no provider is present). */
+export function usePartsMap() {
+  return use(PartsContext)
+}
+
+/**
+ * Read a parts map holding only the current message when inside a message
+ * scope, else the complete map. Scoped consumers skip other messages' chunks.
+ */
+export function useScopedPartsMap(): PartsMap {
+  const toolScope = use(ToolPartScopeContext)
+  if (toolScope) return toolScope
+  const scope = use(MessagePartsScopeContext)
+  return scope?.partsMap ?? use(PartsContext)
+}
+
+/** Read the current message ID without subscribing to the complete parts map. */
+export function useMessagePartsScopeId(): string | undefined {
+  return use(MessageIdContext)
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/** Parse a block/part ID into messageId and part index. */
+export function parseBlockId(blockId: string): { messageId: string; index: number } | null {
+  const lastBlockDash = blockId.lastIndexOf('-block-')
+  if (lastBlockDash === -1) return null
+  const messageId = blockId.slice(0, lastBlockDash)
+  const index = parseInt(blockId.slice(lastBlockDash + 7), 10)
+  if (isNaN(index)) return null
+  return { messageId, index }
+}
+
+/**
+ * Get raw parts for a message from PartsContext.
+ * Returns empty array if no parts provider exists or no parts are present.
+ */
+export function useMessageParts(messageId: string): CherryMessagePart[] {
+  const scope = use(MessagePartsScopeContext)
+  if (scope?.messageId === messageId) return scope.parts
+
+  // React's `use` API may be called conditionally. Scoped message consumers
+  // therefore avoid subscribing to the complete map.
+  const partsMap = use(PartsContext)
+  return messagePartsAt(partsMap, messageId) ?? EMPTY_MESSAGE_PARTS
+}
+
+/**
+ * Resolve a single part from partsMap by part/block ID.
+ * Supports both `${messageId}-part-${index}` and `${messageId}-block-${index}` formats.
+ * Returns null if not found.
+ */
+export function resolvePartFromParts(
+  partsMap: MessagePartRows,
+  partId: string
+): { part: CherryMessagePart; messageId: string; index: number } | null {
+  // Try block format first (existing parseBlockId handles ${msgId}-block-${i})
+  let parsed = parseBlockId(partId)
+  // Also try part format: ${msgId}-part-${i}
+  if (!parsed) {
+    const lastPartDash = partId.lastIndexOf('-part-')
+    if (lastPartDash !== -1) {
+      const messageId = partId.slice(0, lastPartDash)
+      const index = parseInt(partId.slice(lastPartDash + 6), 10)
+      if (!isNaN(index)) {
+        parsed = { messageId, index }
+      }
+    }
+  }
+  if (!parsed) return null
+  const parts = messagePartsAt(partsMap, parsed.messageId)
+  if (!parts || parsed.index >= parts.length) return null
+  return { part: parts[parsed.index], messageId: parsed.messageId, index: parsed.index }
+}

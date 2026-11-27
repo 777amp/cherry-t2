@@ -1,0 +1,682 @@
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
+
+import { dataApiService } from '@data/DataApiService'
+import { isHiddenPart } from '@renderer/components/chat/messages/blocks/messagePartLayouts'
+import { useMessageAuthorAvatarSources } from '@renderer/components/chat/messages/hooks/useMessageAuthorAvatarSources'
+import { useMessageListAdapterCapabilities } from '@renderer/components/chat/messages/hooks/useMessageListAdapterCapabilities'
+import {
+  pickMessageHeaderActions,
+  pickMessageLeafActions,
+  pickMessageLeafState
+} from '@renderer/components/chat/messages/messageListProviderBuilder'
+import { hasPartParentToolCallId } from '@renderer/components/chat/messages/tools/toolParentMetadata'
+import {
+  DEFAULT_MESSAGE_LIST_CONFIG,
+  type MessageGroupRuntime,
+  type MessageListActions,
+  type MessageListItem,
+  type MessageListMeta,
+  type MessageListProviderValue,
+  type MessageListRuntime,
+  type MessageListSelectAllPagination,
+  type MessageListState,
+  type MessageUserProfile,
+  type MessageRuntime,
+  type MessageStreamingLayers
+} from '@renderer/components/chat/messages/types'
+import { dispatchLocateMessage } from '@renderer/components/chat/messages/utils/dispatchLocateMessage'
+import { bindCaptureMessageImageRuntime } from '@renderer/components/chat/messages/utils/messageImageRuntimeActions'
+import { getMessageListItemModel, toMessageListItem } from '@renderer/components/chat/messages/utils/messageListItem'
+import { useProfilePaneToggle } from '@renderer/components/chat/panes/profile'
+import type { DiagnosticReportConfig } from '@renderer/components/ErrorDetailModal'
+import { ipcApi } from '@renderer/ipc'
+import { messageProjectionService } from '@renderer/services/aiTransport'
+import { EVENT_NAMES, EventEmitter } from '@renderer/services/EventService'
+import { openRoute } from '@renderer/services/mainWindowNavigation'
+import type { ExportMessagesToObsidian } from '@renderer/types/messageExport'
+import type { Topic } from '@renderer/types/topic'
+import { formatErrorMessage } from '@renderer/utils/error'
+import { normalizeInlineFilePath, resolveInlineFilePath } from '@renderer/utils/filePath'
+import { PartOverrides, type MessagePartRows, messagePartsAt } from '@renderer/utils/message/messagePartRows'
+import { extractAgentSessionId } from '@shared/ai/agentSessionTopic'
+import type { ProjectionTarget } from '@shared/ai/messageProjection'
+import { isDataApiNotFoundError } from '@shared/data/api/errors'
+import type { AgentSessionHistoryActions } from '@shared/data/api/schemas/agentSessionMessages'
+import type { CherryMessagePart, CherryUIMessage } from '@shared/data/types/message'
+import { agentSessionForkFailureReason } from '@shared/ipc/errors/ai'
+import type { DoctorSubjectRef } from '@shared/types/doctor'
+import { type AbsoluteFilePath, AbsoluteFilePathSchema } from '@shared/types/file'
+import { createFilePathHandle } from '@shared/utils/file'
+
+import AgentSessionApiRetryStatus from './AgentSessionApiRetryStatus'
+import { agentSessionForkAvailability, agentSessionForkReasonLabel } from './agentSessionFork'
+import {
+  consumePendingAgentSessionImageActions,
+  rejectPendingAgentSessionImageActions,
+  settleAgentSessionImageActionRequest
+} from './agentSessionImageActionBus'
+import type { AgentTimelineRow } from './agentTimeline'
+import { useAgentTimeline } from './useAgentTimeline'
+
+const exportToObsidian: ExportMessagesToObsidian = async (title, messages) => {
+  const { default: popup } = await import('@renderer/components/ObsidianExportPopup')
+  return popup.show({ title, messages, processingMethod: '1' })
+}
+
+const canDeleteMessage = (message: MessageListItem): boolean => message.role !== 'assistant'
+
+const agentMessageListRuntimes = new Map<string, MessageListRuntime>()
+
+export function scrollAgentMessageListToEnd(topicId: string): void {
+  agentMessageListRuntimes.get(topicId)?.scrollToBottom()
+}
+
+function withTerminalErrorFallback(
+  messages: CherryUIMessage[],
+  partsByMessageId: MessagePartRows,
+  noResponseMessage: string
+): MessagePartRows {
+  const replacements = new Map<string, CherryMessagePart[]>()
+
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue
+    const status = message.metadata?.status
+    const parts = messagePartsAt(partsByMessageId, message.id) ?? message.parts ?? []
+    const resolvedParts = messageProjectionService.ownsRowParts(parts)
+      ? messageProjectionService.readParts(parts)
+      : parts
+    const hasVisiblePart = resolvedParts.some((part) => !isHiddenPart(part))
+    if (message.metadata?.importedHistory) {
+      if (status === 'error' || !hasVisiblePart) {
+        replacements.set(message.id, [
+          ...resolvedParts,
+          { type: 'data-imported-status', data: { status: message.metadata.importedHistory.status } }
+        ])
+      }
+      continue
+    }
+    const needsFallback =
+      (status === 'error' && !resolvedParts.some((part) => part.type === 'data-error')) ||
+      (status === 'success' && !hasVisiblePart)
+    if (!needsFallback) continue
+
+    replacements.set(message.id, [
+      ...resolvedParts,
+      {
+        type: 'data-error',
+        data: { name: 'AgentRuntimeError', message: noResponseMessage, stack: null }
+      }
+    ])
+  }
+
+  return replacements.size ? new PartOverrides(partsByMessageId, replacements) : partsByMessageId
+}
+
+export function locateAgentMessageInList(topicId: string, messageId: string, highlight?: boolean): boolean {
+  const runtime = agentMessageListRuntimes.get(topicId) ?? null
+  dispatchLocateMessage(runtime, messageId, highlight)
+  return runtime !== null
+}
+
+/** In-place navigation a routed host supplies; without it the fork-source link is hidden. */
+export type NavigateToForkSource = (input: { sourceSessionId: string; returnSessionId?: string }) => Promise<void>
+
+interface AgentMessageListParams {
+  topic: Topic
+  messages: CherryUIMessage[]
+  historyActions?: Readonly<Record<string, AgentSessionHistoryActions | undefined>>
+  partsByMessageId: MessagePartRows
+  streamingLayers?: MessageStreamingLayers
+  assistantProfile?: MessageUserProfile & { id?: string }
+  assistantId?: string
+  isLoading: boolean
+  hasOlder?: boolean
+  loadOlder?: () => void
+  selectAllPagination?: MessageListSelectAllPagination
+  openCitationsPanel?: MessageListActions['openCitationsPanel']
+  isAgentToolFlowActive?: MessageListActions['isAgentToolFlowActive']
+  openAgentToolFlow?: MessageListActions['openAgentToolFlow']
+  openArtifactFile?: MessageListActions['openArtifactFile']
+  openBrowserUrl?: MessageListActions['openBrowserUrl']
+  openExternalUrl?: MessageListActions['openExternalUrl']
+  previewInputFile?: MessageListActions['previewInputFile']
+  openDiagnosticReport?: MessageListActions['openDiagnosticReport']
+  diagnosticReport?: DiagnosticReportConfig
+  getMessageSiblings?: MessageListState['getMessageSiblings']
+  setActiveBranch?: MessageListActions['setActiveBranch']
+  deleteMessage?: MessageListActions['deleteMessage']
+  startEditing?: (messageId: string) => Promise<void>
+  editBusy?: boolean
+  respondToolApproval?: MessageListActions['respondToolApproval']
+  navigateToForkSource?: NavigateToForkSource
+  imageActionConsumer?: 'capture'
+  scrollToBottomOnSend?: boolean
+  projectionTarget?: ProjectionTarget
+  messageNavigation: string
+  workspacePath?: string
+  messageTail?: MessageListState['messageTail']
+  afterMessages?: MessageListState['afterMessages']
+}
+
+/**
+ * Resolve a tool-reported path to a branded absolute path, applying the session
+ * workspace as the root for relative input.
+ *
+ * Returns `null` when no absolute path exists — the only real case being a
+ * relative path with no workspace root to resolve it against. The user-facing
+ * open/reveal actions turn that into an error so the shared UI can report it.
+ *
+ * `workspacePath` arrives as a bare `string`: main normalizes and enforces
+ * absoluteness before persisting (`@main/utils/agentWorkspacePath`), but
+ * `AgentWorkspacePathSchema` is only `z.string().min(1)`, so the guarantee does
+ * not survive the process boundary as a type. Re-asserting it here is the cost
+ * of that gap, not redundant validation — tracked in
+ * https://github.com/CherryHQ/cherry-studio/issues/17431.
+ */
+const resolveWorkspaceFilePath = (workspacePath: string | undefined, rawPath: string): AbsoluteFilePath | null => {
+  const normalizedPath = normalizeInlineFilePath(resolveInlineFilePath(rawPath))
+  const isAlreadyAbsolute = AbsoluteFilePathSchema.safeParse(normalizedPath).success
+
+  const candidate =
+    !workspacePath || isAlreadyAbsolute
+      ? normalizedPath
+      : `${workspacePath.replace(/[\\/]+$/g, '')}/${normalizedPath.replace(/^\.?[\\/]+/g, '')}`
+
+  return AbsoluteFilePathSchema.safeParse(candidate).data ?? null
+}
+
+/** Resolve for an action the user explicitly asked for — an unresolvable path is an error they must see. */
+const requireWorkspaceFilePath = (workspacePath: string | undefined, rawPath: string): AbsoluteFilePath => {
+  const resolved = resolveWorkspaceFilePath(workspacePath, rawPath)
+  if (!resolved) throw new Error(`Cannot resolve "${rawPath}" to an absolute path without a workspace root`)
+  return resolved
+}
+
+export function useAgentMessageListProviderValue({
+  topic,
+  messages,
+  historyActions,
+  partsByMessageId,
+  streamingLayers,
+  assistantProfile,
+  assistantId,
+  isLoading,
+  hasOlder = false,
+  loadOlder,
+  selectAllPagination,
+  openCitationsPanel,
+  isAgentToolFlowActive,
+  openAgentToolFlow,
+  openArtifactFile,
+  previewInputFile,
+  openBrowserUrl,
+  openExternalUrl,
+  openDiagnosticReport,
+  diagnosticReport,
+  deleteMessage,
+  getMessageSiblings,
+  setActiveBranch,
+  startEditing,
+  editBusy,
+  respondToolApproval,
+  navigateToForkSource,
+  imageActionConsumer,
+  scrollToBottomOnSend = false,
+  messageNavigation,
+  projectionTarget,
+  workspacePath,
+  messageTail,
+  afterMessages
+}: AgentMessageListParams): MessageListProviderValue {
+  const { t } = useTranslation()
+  const normalInteractionsEnabled = imageActionConsumer !== 'capture'
+  const sessionId = useMemo(() => extractAgentSessionId(topic.id), [topic.id])
+  const resolvedAgentId = assistantId ?? topic.assistantId
+  const messageItemCacheRef = useRef(
+    new WeakMap<
+      AgentTimelineRow,
+      {
+        assistantId?: string
+        item: MessageListItem
+        topicId: string
+      }
+    >()
+  )
+  const displayPartsByMessageId = useMemo(
+    () => withTerminalErrorFallback(messages, partsByMessageId, t('error.no_response')),
+    [messages, partsByMessageId, t]
+  )
+  const timeline = useAgentTimeline(messages, displayPartsByMessageId, projectionTarget)
+  const sourceIds = useMemo(
+    () => new Map(timeline.rows.map((row) => [row.id, row.sourceMessageId ?? row.id])),
+    [timeline.rows]
+  )
+  const partialSegments = useMemo(
+    () => new Set(timeline.rows.filter((row) => row.isRunBoundary === false).map((row) => row.id)),
+    [timeline.rows]
+  )
+  const displayStreamingLayers = useMemo(() => {
+    if (!streamingLayers) return undefined
+    const active = new Set(streamingLayers.liveMessageIds)
+    return {
+      historyPartsByMessageId: timeline.parts,
+      liveMessageIds: timeline.rows
+        .filter(
+          (row) => row.kind !== 'marker' && row.kind !== 'interrupted' && active.has(row.sourceMessageId ?? row.id)
+        )
+        .map((row) => row.id)
+    }
+  }, [streamingLayers, timeline])
+  const visibleRows = useMemo(
+    () => timeline.rows.filter(({ parts }) => !parts.length || parts.some((part) => !hasPartParentToolCallId(part))),
+    [timeline.rows]
+  )
+  const messageItems = useMemo(
+    () =>
+      visibleRows.map((row) => {
+        const cached = messageItemCacheRef.current.get(row)
+        if (cached && cached.assistantId === resolvedAgentId && cached.topicId === topic.id) return cached.item
+        const item: MessageListItem = {
+          ...toMessageListItem(row.message, { assistantId: resolvedAgentId, topicId: topic.id }),
+          id: row.id,
+          partIds: row.partIds,
+          presentation: row.kind,
+          showHeader: row.showHeader,
+          ...(row.sourceMessageId && { parentId: null }),
+          sourceMessageId: row.sourceMessageId,
+          isRunBoundary: row.isRunBoundary,
+          ...(row.isRunBoundary === false && { stats: undefined })
+        }
+        messageItemCacheRef.current.set(row, { assistantId: resolvedAgentId, item, topicId: topic.id })
+        return item
+      }),
+    [resolvedAgentId, visibleRows, topic.id]
+  )
+
+  const getDoctorSubject = useCallback(
+    (message: MessageListItem): DoctorSubjectRef | undefined => {
+      if (!resolvedAgentId) return undefined
+      const model = message ? getMessageListItemModel(message) : undefined
+      return model
+        ? { kind: 'agent', agentId: resolvedAgentId, providerId: model.provider, modelId: model.id }
+        : { kind: 'agent', agentId: resolvedAgentId }
+    },
+    [resolvedAgentId]
+  )
+  const {
+    errorActions,
+    exportActions,
+    getMessageActivityState,
+    messageActivityStore,
+    headerCapabilities,
+    leafCapabilities,
+    menuConfig,
+    messageUiStateCache,
+    renderConfig,
+    selectionController,
+    updateRenderConfig
+  } = useMessageListAdapterCapabilities({
+    exportToObsidian,
+    topicId: topic.id,
+    topicName: topic.name,
+    messages: messageItems,
+    partsByMessageId: timeline.parts,
+    streamingLayers: displayStreamingLayers,
+    deleteMessage,
+    canDeleteMessage,
+    diagnosticReport,
+    getDoctorSubject,
+    selectAllPagination
+  })
+  // The conversation's current Assistant / Agent, not the snapshot each message header shows.
+  const toggleAuthorProfile = useProfilePaneToggle()?.toggle
+
+  // Raw path to main, which resolves workspace-relative input against the session's workspace: the
+  // renderer must never join paths, and nothing unresolved may reach `shell.openPath`.
+  const openPath = useCallback(
+    (path: string) => ipcApi.request('ai.agent.session.open_path', { sessionId, path }),
+    [sessionId]
+  )
+
+  // Still renderer-side: the open-target menu needs an absolute path to describe, and it is not a
+  // file-opening call.
+  const resolvePath = useMemo<MessageListActions['resolvePath']>(
+    () => (workspacePath ? (path) => requireWorkspaceFilePath(workspacePath, path) : undefined),
+    [workspacePath]
+  )
+
+  const isDirectory = useCallback<NonNullable<MessageListActions['isDirectory']>>(
+    async (path) => {
+      const resolvedPath = requireWorkspaceFilePath(workspacePath, path)
+      const metadata = await ipcApi.request('file.get_metadata', createFilePathHandle(resolvedPath))
+      return metadata?.kind === 'directory'
+    },
+    [workspacePath]
+  )
+
+  const abortTool = useCallback((toolId: string) => {
+    return ipcApi.request('mcp.tool.abort_call', { callId: toolId })
+  }, [])
+
+  const navigateToRoute = useCallback<NonNullable<MessageListActions['navigateToRoute']>>(
+    ({ path, query }) => openRoute(path, query),
+    []
+  )
+
+  useEffect(() => {
+    if (imageActionConsumer !== 'capture') return
+
+    return () => rejectPendingAgentSessionImageActions(sessionId, new Error('Agent session image export was cancelled'))
+  }, [imageActionConsumer, sessionId])
+
+  const bindRuntime = useCallback(
+    (runtime: MessageListRuntime) => {
+      if (imageActionConsumer === 'capture') {
+        const unbindCaptureRuntime = bindCaptureMessageImageRuntime({
+          cancelMessage: 'Agent session image export was cancelled',
+          consumePendingActions: consumePendingAgentSessionImageActions,
+          rejectPendingActions: rejectPendingAgentSessionImageActions,
+          runtime,
+          settleActionRequest: settleAgentSessionImageActionRequest,
+          targetId: sessionId
+        })
+        return unbindCaptureRuntime
+      }
+
+      agentMessageListRuntimes.set(topic.id, runtime)
+      const unsubscribeSend = scrollToBottomOnSend
+        ? EventEmitter.on(EVENT_NAMES.SEND_MESSAGE, ({ topicId }: { topicId: string }) => {
+            if (topicId === topic.id) runtime.scrollToBottom()
+          })
+        : undefined
+
+      return () => {
+        unsubscribeSend?.()
+        if (agentMessageListRuntimes.get(topic.id) === runtime) {
+          agentMessageListRuntimes.delete(topic.id)
+        }
+      }
+    },
+    [imageActionConsumer, scrollToBottomOnSend, sessionId, topic.id]
+  )
+
+  const bindMessageRuntime = useCallback(
+    (messageId: string, runtime: MessageRuntime) => {
+      if (!normalInteractionsEnabled) return () => {}
+
+      const unsubscribes = [EventEmitter.on(EVENT_NAMES.LOCATE_MESSAGE + ':' + messageId, runtime.locateMessage)]
+
+      return () => unsubscribes.forEach((unsub) => unsub())
+    },
+    [normalInteractionsEnabled]
+  )
+
+  const bindMessageGroupRuntime = useCallback(
+    (messageIds: string[], runtime: MessageGroupRuntime) => {
+      if (!normalInteractionsEnabled) return () => {}
+
+      const unsubscribes = messageIds.map((messageId) =>
+        EventEmitter.on(EVENT_NAMES.LOCATE_MESSAGE + ':' + messageId, () => runtime.locateMessage(messageId))
+      )
+
+      return () => unsubscribes.forEach((unsub) => unsub())
+    },
+    [normalInteractionsEnabled]
+  )
+
+  const locateMessage = useCallback(
+    (messageId: string, highlight?: boolean) => {
+      locateAgentMessageInList(topic.id, messageId, highlight)
+    },
+    [topic.id]
+  )
+
+  // Replaces the live turn's placeholder with the api-retry line while retrying, otherwise the
+  // placeholder itself (the component decides from session-scoped cache).
+  const renderActiveTurnStatus = useCallback(
+    (placeholder: ReactNode) => <AgentSessionApiRetryStatus sessionId={sessionId} fallback={placeholder} />,
+    [sessionId]
+  )
+
+  const { notifyError } = leafCapabilities
+  const openForkSourceSession = useCallback(
+    async (sourceSessionId: string) => {
+      try {
+        await dataApiService.get(`/agent-sessions/${sourceSessionId}`)
+        await navigateToForkSource?.({ sourceSessionId, returnSessionId: sessionId ?? undefined })
+      } catch (error) {
+        notifyError(
+          isDataApiNotFoundError(error) ? t('agent_session_fork.source_not_found') : formatErrorMessage(error)
+        )
+      }
+    },
+    [navigateToForkSource, notifyError, sessionId, t]
+  )
+  const forkSession = useCallback(
+    async (messageId: string) => {
+      if (!sessionId) return
+      try {
+        const result = await ipcApi.request('ai.agent.session.fork', {
+          sourceSessionId: sessionId,
+          messageId
+        })
+        openRoute('/app/agents', { sessionId: result.sessionId })
+      } catch (error) {
+        const reason = agentSessionForkFailureReason(error)
+        if (reason) {
+          notifyError(agentSessionForkReasonLabel(t, reason))
+          return
+        }
+        throw error
+      }
+    },
+    [sessionId, t, notifyError]
+  )
+  const agentRenderConfig = useMemo(
+    () => ({
+      ...renderConfig,
+      keepIntermediateAssistantText: true,
+      expandToolSteps: false,
+      expandLiveToolSteps: true
+    }),
+    [renderConfig]
+  )
+  const state = useMemo<MessageListState>(
+    () => ({
+      topic,
+      getMessageSiblings: getMessageSiblings
+        ? (id) => (partialSegments.has(id) ? null : getMessageSiblings(sourceIds.get(id) ?? id))
+        : undefined,
+      messages: messageItems,
+      partsByMessageId: timeline.parts,
+      streamingLayers: displayStreamingLayers,
+      activeTurnStatus: normalInteractionsEnabled ? renderActiveTurnStatus : undefined,
+      messageTail:
+        normalInteractionsEnabled && messageTail
+          ? {
+              ...messageTail,
+              messageId:
+                timeline.rows.findLast(
+                  (row) =>
+                    row.kind !== 'marker' &&
+                    row.kind !== 'interrupted' &&
+                    (row.sourceMessageId ?? row.id) === messageTail.messageId
+                )?.id ?? messageTail.messageId
+            }
+          : undefined,
+      afterMessages: normalInteractionsEnabled ? afterMessages : undefined,
+      isInitialLoading: isLoading && messageItems.length === 0,
+      hasOlder,
+      messageNavigation,
+      ...DEFAULT_MESSAGE_LIST_CONFIG,
+      listKey: topic.id,
+      renderConfig: agentRenderConfig,
+      menuConfig,
+      selection: selectionController.selection,
+      getMessageUiState: messageUiStateCache.getMessageUiState,
+      messageActivityStore,
+      getMessageActivityState,
+      ...pickMessageLeafState(leafCapabilities)
+    }),
+    [
+      getMessageActivityState,
+      getMessageSiblings,
+      partialSegments,
+      sourceIds,
+      timeline.rows,
+      hasOlder,
+      isLoading,
+      leafCapabilities,
+      menuConfig,
+      messageUiStateCache.getMessageUiState,
+      messageNavigation,
+      messageItems,
+      messageActivityStore,
+      messageTail,
+      afterMessages,
+      normalInteractionsEnabled,
+      timeline.parts,
+      renderActiveTurnStatus,
+      agentRenderConfig,
+      selectionController.selection,
+      displayStreamingLayers,
+      topic
+    ]
+  )
+
+  const restoreUnsentMessage = useCallback(
+    (message: MessageListItem, send: boolean) =>
+      void EventEmitter.emit(EVENT_NAMES.RESTORE_AGENT_COMPOSER_MESSAGE, {
+        topicId: topic.id,
+        messageId: message.id,
+        parts: messagePartsAt(partsByMessageId, message.id) ?? [],
+        send
+      }),
+    [partsByMessageId, topic.id]
+  )
+
+  const actions = useMemo<MessageListActions>(
+    () => ({
+      setActiveBranch: normalInteractionsEnabled ? setActiveBranch : undefined,
+      resendUnsentMessage: normalInteractionsEnabled ? (message) => restoreUnsentMessage(message, true) : undefined,
+      editUnsentMessage: normalInteractionsEnabled ? (message) => restoreUnsentMessage(message, false) : undefined,
+      editLabel: t('agent.edit_resend.label'),
+      canEditMessage: (message) =>
+        normalInteractionsEnabled &&
+        !!startEditing &&
+        !editBusy &&
+        historyActions?.[message.id]?.edit === null &&
+        message.role === 'user' &&
+        !message.delivery,
+      startEditing: startEditing
+        ? (message) => {
+            void startEditing(message.id)
+          }
+        : undefined,
+      openForkSourceSession: normalInteractionsEnabled && navigateToForkSource ? openForkSourceSession : undefined,
+      forkSession: normalInteractionsEnabled
+        ? {
+            label: t('agent_session_fork.label'),
+            availability: (message) =>
+              agentSessionForkAvailability(t, message, historyActions?.[message.sourceMessageId ?? message.id]),
+            run: (id) => forkSession(sourceIds.get(id) ?? id)
+          }
+        : undefined,
+      loadOlder,
+      bindRuntime,
+      deleteMessage,
+      canDeleteMessage,
+      ...exportActions,
+      ...errorActions,
+      ...pickMessageLeafActions(leafCapabilities),
+      openBrowserUrl,
+      openExternalUrl: openExternalUrl ?? leafCapabilities.openExternalUrl,
+      navigateToRoute,
+      ...pickMessageHeaderActions({ ...headerCapabilities, toggleAuthorProfile }),
+      respondToolApproval: respondToolApproval
+        ? (input) =>
+            respondToolApproval({
+              ...input,
+              match: { ...input.match, messageId: sourceIds.get(input.match.messageId) ?? input.match.messageId }
+            })
+        : undefined,
+      resolvePath,
+      isDirectory,
+      openPath,
+      openArtifactFile,
+      previewInputFile,
+      openDiagnosticReport: normalInteractionsEnabled ? openDiagnosticReport : undefined,
+      openCitationsPanel,
+      isAgentToolFlowActive,
+      openAgentToolFlow,
+      abortTool,
+      bindMessageRuntime,
+      bindMessageGroupRuntime,
+      locateMessage,
+      ...selectionController.actions,
+      updateMessageUiState: messageUiStateCache.updateMessageUiState,
+      updateRenderConfig
+    }),
+    [
+      forkSession,
+      sourceIds,
+      setActiveBranch,
+      startEditing,
+      editBusy,
+      historyActions,
+      navigateToForkSource,
+      openForkSourceSession,
+      t,
+      abortTool,
+      bindRuntime,
+      bindMessageGroupRuntime,
+      bindMessageRuntime,
+      deleteMessage,
+      errorActions,
+      exportActions,
+      headerCapabilities,
+      toggleAuthorProfile,
+      isDirectory,
+      leafCapabilities,
+      navigateToRoute,
+      loadOlder,
+      locateMessage,
+      messageUiStateCache.updateMessageUiState,
+      normalInteractionsEnabled,
+      openCitationsPanel,
+      openArtifactFile,
+      previewInputFile,
+      openDiagnosticReport,
+      openBrowserUrl,
+      openExternalUrl,
+      isAgentToolFlowActive,
+      openAgentToolFlow,
+      openPath,
+      respondToolApproval,
+      resolvePath,
+      restoreUnsentMessage,
+      selectionController.actions,
+      updateRenderConfig
+    ]
+  )
+
+  const assistantAvatarSources = useMessageAuthorAvatarSources(messageItems, topic.id)
+  const meta = useMemo<MessageListMeta>(
+    () => ({
+      selectionLayer: true,
+      userProfile: headerCapabilities.userProfile,
+      assistantProfile,
+      authorAvatars:
+        assistantProfile?.id && assistantProfile.avatar !== undefined
+          ? new Map([[assistantProfile.id, assistantProfile.avatar]])
+          : undefined,
+      assistantAvatarSources,
+      imageExportFileName: topic.name,
+      aiUsageMessageKind: 'agent-session'
+    }),
+    [assistantProfile, assistantAvatarSources, headerCapabilities.userProfile, topic.name]
+  )
+
+  return useMemo(() => ({ state, actions, meta }), [actions, meta, state])
+}

@@ -1,0 +1,80 @@
+import type { FC } from 'react'
+
+import MessageList from '@renderer/components/chat/messages/MessageList'
+import { MessageListProvider } from '@renderer/components/chat/messages/MessageListProvider'
+import type {
+  MessageListActions,
+  MessageListSelectAllPagination,
+  MessageListState,
+  MessageStreamingLayers
+} from '@renderer/components/chat/messages/types'
+import type { Assistant } from '@renderer/types/assistant'
+import type { Topic } from '@renderer/types/topic'
+import type { MessagePartRows } from '@renderer/utils/message/messagePartRows'
+import type { CherryUIMessage } from '@shared/data/types/message'
+
+import { useHomeMessageListProviderValue } from './messages/homeMessageListAdapter'
+
+interface ChatMainProps {
+  topic: Topic
+  assistant?: Assistant
+  messages: CherryUIMessage[]
+  partsByMessageId: MessagePartRows
+  streamingLayers: MessageStreamingLayers
+  onBindRuntime: NonNullable<MessageListActions['bindRuntime']>
+  isInitialLoading?: boolean
+  isMessagesStale?: boolean
+  loadOlder: () => void
+  hasOlder: boolean
+  selectAllPagination?: MessageListSelectAllPagination
+  openCitationsPanel?: MessageListActions['openCitationsPanel']
+  addGeneratedImageToComposer?: MessageListActions['addGeneratedImageToComposer']
+  onStartBranchDraft?: MessageListActions['startMessageBranch']
+  messageHead?: MessageListState['messageHead']
+  afterMessages?: MessageListState['afterMessages']
+}
+
+const ChatMain: FC<ChatMainProps> = ({
+  topic,
+  assistant,
+  messages,
+  partsByMessageId,
+  streamingLayers,
+  onBindRuntime,
+  isInitialLoading,
+  isMessagesStale,
+  loadOlder,
+  hasOlder,
+  selectAllPagination,
+  openCitationsPanel,
+  addGeneratedImageToComposer,
+  onStartBranchDraft,
+  messageHead,
+  afterMessages
+}) => {
+  const value = useHomeMessageListProviderValue({
+    topic,
+    assistant,
+    messages,
+    partsByMessageId,
+    streamingLayers,
+    onBindRuntime,
+    isInitialLoading,
+    isMessagesStale,
+    loadOlder,
+    hasOlder,
+    selectAllPagination,
+    openCitationsPanel,
+    addGeneratedImageToComposer,
+    onStartBranchDraft,
+    messageHead,
+    afterMessages
+  })
+  return (
+    <MessageListProvider value={value}>
+      <MessageList enableSearch />
+    </MessageListProvider>
+  )
+}
+
+export default ChatMain

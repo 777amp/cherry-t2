@@ -8,7 +8,7 @@ Terse mode default. Load `.agents/skills/caveman/SKILL.md`. Upstream repo rules 
 - Stack: Electron `45.2.2`, React `19`, Vite `8`, TypeScript, `better-sqlite3`, Drizzle ORM, pnpm workspace
 - Target hardware: Raspberry Pi 4B (`BCM2711` quad-core Cortex-A72, 2 GB / 4 GB / 8 GB RAM, VideoCore VI Mesa V3D, microSD)
 - Target OS: Debian 13 (Trixie) / Raspberry Pi OS 64-bit (`arm64` / `aarch64`), Wayland (labwc/Wayfire) and X11
-- Active release: `v2.2.3-rpi.3` (`.deb`, `SHA256SUMS.txt` — **`.deb` only, never build `.AppImage`**)
+- Active release: `v2.2.3-rpi.4` (`.deb`, `SHA256SUMS.txt` — **`.deb` only, never build `.AppImage`**)
 
 ## Goal
 
@@ -18,6 +18,7 @@ Run full Cherry Studio fast and stable on Raspberry Pi 4B Debian 13 without OOM 
 
 1. **Pi hardware detect** — `src/main/core/platform.ts`
    - Added `isLinuxArm64`, `totalMemoryMB`, `isRaspberryPi` (reads `/proc/device-tree/model`), `isPiOptimized`.
+   - `isLinuxWayland` checks both `XDG_SESSION_TYPE === 'wayland'` and `WAYLAND_DISPLAY`.
    - Active on Raspberry Pi or Linux ARM64 with `<= 8192 MB` RAM. Override: `CHERRY_PI_MODE=1|0`.
 
 2. **Lazy window pools & spellcheck** — `src/main/core/window/windowRegistry.ts`
@@ -28,10 +29,11 @@ Run full Cherry Studio fast and stable on Raspberry Pi 4B Debian 13 without OOM 
 3. **Chromium, V8, Wayland, V3D flags** — `src/main/core/preboot/chromiumFlags.ts`
    - Exports `CHERRY_PI_OPTIMIZED=1`, caps `UV_THREADPOOL_SIZE=4`.
    - Unified `--enable-features` array so Wayland flags do not overwrite core flags.
-   - Added `--ozone-platform-hint=auto`, `WaylandWindowDecorations`, `GlobalShortcutsPortal`.
+   - Forces `--ozone-platform=wayland` on Pi Wayland (`WaylandWindowDecorations`, `GlobalShortcutsPortal`), avoids XWayland `:0` / DRI2 fallback.
    - Dynamic V8 heap cap: `512 MB` (`<= 2560 MB` RAM), `1024 MB` (`<= 4608 MB`), `1536 MB` (8 GB) without `--optimize-for-size` (keeps V8 TurboFan JIT fast).
    - Caps: `--renderer-process-limit=3`, `--num-raster-threads=2`, `--disk-cache-size=52428800`, `--media-cache-size=26214400`.
-   - Stability: gates `--disable-dev-shm-usage` on `/dev/shm < 128 MB`, `--disable-smooth-scrolling`, `--disable-background-networking`, `--disable-component-update`, `--disable-gpu-rasterization` (CPU raster + GPU compositing on Mesa V3D; opt-in GPU raster via `CHERRY_PI_GPU_RASTER=1`).
+   - GPU/media: `--use-gl=angle --use-angle=gles-egl`, `--disable-gpu-rasterization` (CPU raster + GPU compositing on Mesa V3D; opt-in GPU raster via `CHERRY_PI_GPU_RASTER=1`), `--disable-accelerated-video-decode` + VA-API disabled.
+   - Stability: gates `--disable-dev-shm-usage` on `/dev/shm < 128 MB`, `--disable-smooth-scrolling`, `--disable-background-networking`, `--disable-component-update`.
    - Software GL fallback: `CHERRY_PI_SOFTWARE_GL=1`.
 
 4. **Low-power renderer CSS, streaming, virtualizer** — `src/preload/preload.ts`, `src/renderer/windows/prepareWindow.ts`, `src/renderer/assets/styles/pi-optimize.css`, `src/renderer/hooks/useSmoothStream.ts`, `src/main/ai/streamManager/listeners/WebContentsListener.ts`, `src/renderer/components/chat/messages/list/MessageVirtualList.tsx`, `src/renderer/components/chat/messages/list/useSmoothScrollAnimation.ts`

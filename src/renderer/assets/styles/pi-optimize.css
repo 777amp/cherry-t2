@@ -27,7 +27,6 @@ html.pi-optimized *::after {
 }
 
 /* Kill infinite paint-heavy animations completely */
-html.pi-optimized .animation-shimmer,
 html.pi-optimized .animation-pulse,
 html.pi-optimized .animation-breathe,
 html.pi-optimized .animate-pulse,
@@ -35,9 +34,26 @@ html.pi-optimized .animate-bounce {
   animation: none !important;
 }
 
+/* Only motion kept on Pi: spinners and the waiting-for-agent text (opacity only, no repaint). */
+html.pi-optimized .animate-spin {
+  animation-duration: 1s !important;
+  animation-iteration-count: infinite !important;
+}
+
 html.pi-optimized .animation-shimmer {
   background: none !important;
   color: var(--muted-foreground) !important;
   -webkit-background-clip: border-box !important;
   background-clip: border-box !important;
+  animation: pi-wait-pulse 1.4s ease-in-out infinite !important;
+}
+
+@keyframes pi-wait-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }

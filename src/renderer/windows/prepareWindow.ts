@@ -1,3 +1,5 @@
+import { MotionGlobalConfig } from 'motion/react'
+
 import { preferenceService } from '@data/PreferenceService'
 import { DataApiDevtools } from '@data/utils/dataApiDevtools'
 import { initI18n } from '@renderer/i18n/resolver'
@@ -21,6 +23,7 @@ export async function prepareWindow(options: PrepareWindowOptions): Promise<void
   const isPiOptimized = Boolean(window.api?.isPiOptimized)
   if (isPiOptimized) {
     document.documentElement.classList.add('pi-optimized')
+    MotionGlobalConfig.skipAnimations = true
   } else {
     initSentry()
   }

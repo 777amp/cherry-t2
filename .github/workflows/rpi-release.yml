@@ -31,7 +31,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -123,6 +123,62 @@ jobs:
           echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
           echo "deb_name=${DEB_NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Generate categorized release notes (Vercel AI Gateway)
+        env:
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+          HEAD_TAG: ${{ steps.artifacts.outputs.tag }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          : > ai-notes.md
+          if [ -z "${AI_GATEWAY_API_KEY:-}" ]; then
+            echo "AI_GATEWAY_API_KEY not set; skipping AI release notes."
+            exit 0
+          fi
+
+          HEAD_REF="HEAD"
+          if git rev-parse -q --verify "refs/tags/${HEAD_TAG}" >/dev/null; then HEAD_REF="${HEAD_TAG}"; fi
+          PREV_TAG=$(git tag --sort=-creatordate | grep -vx "${HEAD_TAG}" | head -n 1 || true)
+          if [ -z "$PREV_TAG" ]; then PREV_TAG=$(git rev-list --max-parents=0 HEAD | head -n 1); fi
+
+          COMMITS=$(git log "${PREV_TAG}..${HEAD_REF}" --pretty=format:"- %s (%h)" || true)
+          DIFF_STAT=$(git diff --stat "${PREV_TAG}..${HEAD_REF}" || true)
+          DIFF_PATCH=$(git diff "${PREV_TAG}..${HEAD_REF}" -- . ':!*.lock' ':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock' | head -c 45000 || true)
+
+          jq -n \
+            --arg prev "$PREV_TAG" \
+            --arg head "$HEAD_TAG" \
+            --arg commits "$COMMITS" \
+            --arg stat "$DIFF_STAT" \
+            --arg patch "$DIFF_PATCH" \
+            '{
+              model: "openai/gpt-6-luna",
+              service_tier: "flex",
+              messages: [
+                {
+                  role: "system",
+                  content: "You generate clean Markdown release notes from git commits and diffs. Group changes under sections: ## feat, ## perf, ## bug, ## refactor, ## docs. Omit any empty section. Write concise bullet points summarizing user-facing or meaningful changes; skip lockfile/trivial noise."
+                },
+                {
+                  role: "user",
+                  content: ("Range: " + $prev + " -> " + $head + "\n\nCommits:\n" + $commits + "\n\nDiff stat:\n" + $stat + "\n\nDiff (truncated):\n" + $patch)
+                }
+              ]
+            }' > payload.json
+
+          RESPONSE=$(curl -sS https://ai-gateway.vercel.sh/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${AI_GATEWAY_API_KEY}" \
+            -d @payload.json || true)
+          NOTES=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null || true)
+
+          if [ -z "$NOTES" ]; then
+            echo "AI release notes unavailable; continuing without them. Raw response:"
+            echo "$RESPONSE"
+            exit 0
+          fi
+          printf '%s\n' "$NOTES" > ai-notes.md
+
       - name: Create GitHub Release with install instructions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -169,6 +225,10 @@ jobs:
           CHERRY_PI_MODE=0 cherry-studio
           \`\`\`
           EOF
+
+          if [ -s ai-notes.md ]; then
+            { printf '\n---\n\n## What changed\n\n'; cat ai-notes.md; } >> release-notes.md
+          fi
 
           FLAGS=()
           if [[ "$PRERELEASE" == "true" ]]; then

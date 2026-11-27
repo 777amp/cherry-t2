@@ -395,7 +395,8 @@ export class ClientMcpConnection implements McpConnection {
   }
 
   public async listPrompts(cacheMode: CacheMode = 'use', signal?: AbortSignal): Promise<Prompt[]> {
-    // The SDK reads the negotiated server capabilities and returns [] when prompts are not advertised.
+    // Skip the SDK call: it warns on every call when the server does not advertise prompts.
+    if (!this.client.getServerCapabilities()?.prompts) return []
     const { prompts } = await this.client.listPrompts(this.paramsWithLogLevel({}), { cacheMode, signal })
     return prompts
   }
@@ -494,7 +495,8 @@ export class ClientMcpConnection implements McpConnection {
   }
 
   public async listResources(cacheMode: CacheMode = 'use', signal?: AbortSignal): Promise<Resource[]> {
-    // The SDK reads the negotiated server capabilities and returns [] when resources are not advertised.
+    // Skip the SDK call: it warns on every call when the server does not advertise resources.
+    if (!this.client.getServerCapabilities()?.resources) return []
     const { resources } = await this.client.listResources(this.paramsWithLogLevel({}), { cacheMode, signal })
     return resources
   }

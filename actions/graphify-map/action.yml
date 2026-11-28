@@ -1,0 +1,112 @@
+name: Graphify Codebase Map
+description: Generate a codebase dependency graph and report without using an LLM.
+
+inputs:
+  scan-path:
+    description: Repository directory to scan.
+    required: false
+    default: '.'
+
+  output-dir:
+    description: Directory for generated Graphify files.
+    required: false
+    default: graphify-out
+
+  graphify-version:
+    description: Pinned graphifyy PyPI package version.
+    required: false
+    default: '0.9.121'
+
+  python-version:
+    description: Python version.
+    required: false
+    default: '3.12'
+
+  max-workers:
+    description: Maximum extraction workers.
+    required: false
+    default: '2'
+
+outputs:
+  graph-json:
+    description: Path to generated graph.json
+    value: ${{ steps.extract.outputs.graph_json }}
+
+  graph-html:
+    description: Path to generated graph.html
+    value: ${{ steps.extract.outputs.graph_html }}
+
+  report:
+    description: Path to generated GRAPH_REPORT.md
+    value: ${{ steps.extract.outputs.report }}
+
+  manifest:
+    description: Path to generated manifest.json
+    value: ${{ steps.extract.outputs.manifest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+
+    - name: Install Graphify
+      shell: bash
+      env:
+        GRAPHIFY_VERSION: ${{ inputs.graphify-version }}
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        python -m pip install "graphifyy==${GRAPHIFY_VERSION}"
+
+    - name: Extract codebase graph
+      id: extract
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.scan-path }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+        MAX_WORKERS: ${{ inputs.max-workers }}
+        GRAPHIFY_BACKEND: none
+      run: |
+        set -euo pipefail
+
+        if [[ ! -d "$SCAN_PATH" ]]; then
+          echo "::error::Scan path does not exist: $SCAN_PATH"
+          exit 1
+        fi
+
+        if ! [[ "$MAX_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::max-workers must be a positive integer"
+          exit 1
+        fi
+
+        mkdir -p "$OUTPUT_DIR"
+
+        graphify extract "$SCAN_PATH" \
+          --code-only \
+          --out "$OUTPUT_DIR" \
+          --max-workers "$MAX_WORKERS"
+
+        for file in graph.json graph.html GRAPH_REPORT.md; do
+          if [[ ! -s "$OUTPUT_DIR/$file" ]]; then
+            echo "::error::Expected output missing or empty: $OUTPUT_DIR/$file"
+            exit 1
+          fi
+        done
+
+        echo "graph_json=$OUTPUT_DIR/graph.json" >> "$GITHUB_OUTPUT"
+        echo "graph_html=$OUTPUT_DIR/graph.html" >> "$GITHUB_OUTPUT"
+        echo "report=$OUTPUT_DIR/GRAPH_REPORT.md" >> "$GITHUB_OUTPUT"
+
+        if [[ -s "$OUTPUT_DIR/manifest.json" ]]; then
+          echo "manifest=$OUTPUT_DIR/manifest.json" >> "$GITHUB_OUTPUT"
+        fi
+
+        {
+          echo "## Graphify Codebase Map"
+          echo ""
+          cat "$OUTPUT_DIR/GRAPH_REPORT.md"
+        } >> "$GITHUB_STEP_SUMMARY"

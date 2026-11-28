@@ -11,7 +11,7 @@ API key, embeddings, or LLM calls.
 Graphify generates:
 
 | File | Description |
-|—|—|
+|---|---|
 | `graph.json` | Structured codebase graph |
 | `graph.html` | Interactive graph visualization |
 | `GRAPH_REPORT.md` | Human-readable codebase report |
@@ -25,9 +25,9 @@ Graphify generates:
   with:
     scan-path: .
     output-dir: graphify-out
-    graphify-version: ‘0.9.121’
-    python-version: ‘3.12’
-    max-workers: ‘2’
+    graphify-version: '0.9.121'
+    python-version: '3.12'
+    max-workers: '2'
 
 - name: Upload map
   uses: actions/upload-artifact@v4

@@ -89,6 +89,27 @@ runs:
           --out "$OUTPUT_DIR" \
           --max-workers "$MAX_WORKERS"
 
+        # extract may write graph.json into a nested directory; locate it.
+        GRAPH_JSON=$(find "$OUTPUT_DIR" -name graph.json -size +0c -print -quit)
+        if [[ -z "$GRAPH_JSON" ]]; then
+          echo "::error::graph.json was not produced under $OUTPUT_DIR"
+          exit 1
+        fi
+        GRAPH_DIR=$(dirname "$GRAPH_JSON")
+
+        # extract --code-only does not write the report or HTML; generate them.
+        graphify cluster-only "$GRAPH_DIR"
+
+        # Normalize outputs into OUTPUT_DIR so paths and upload stay stable.
+        if [[ "$GRAPH_DIR" != "$OUTPUT_DIR" ]]; then
+          for file in graph.json graph.html GRAPH_REPORT.md manifest.json .graphify_analysis.json; do
+            if [[ -e "$GRAPH_DIR/$file" ]]; then
+              mv -f "$GRAPH_DIR/$file" "$OUTPUT_DIR/$file"
+            fi
+          done
+          rm -rf "$GRAPH_DIR"
+        fi
+
         for file in graph.json graph.html GRAPH_REPORT.md; do
           if [[ ! -s "$OUTPUT_DIR/$file" ]]; then
             echo "::error::Expected output missing or empty: $OUTPUT_DIR/$file"

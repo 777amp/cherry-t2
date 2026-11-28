@@ -59,7 +59,7 @@ runs:
       run: |
         set -euo pipefail
         python -m pip install --upgrade pip
-        python -m pip install "graphifyy==${GRAPHIFY_VERSION}"
+        python -m pip install "graphifyy[sql]==${GRAPHIFY_VERSION}"
 
     - name: Extract codebase graph
       id: extract
@@ -96,9 +96,22 @@ runs:
           exit 1
         fi
         GRAPH_DIR=$(dirname "$GRAPH_JSON")
+        echo "graph.json: $GRAPH_JSON"
+        echo "graph dir: $GRAPH_DIR"
+        ls -la "$GRAPH_DIR"
+
+        # cluster-only resolves its input as <arg>/graphify-out/graph.json,
+        # so pass the parent when extract nested the graph inside a
+        # graphify-out subdirectory; otherwise the lookup triple-nests
+        # (graphify-out/graphify-out/graphify-out/graph.json) and misses.
+        CLUSTER_ARG="$GRAPH_DIR"
+        if [[ "$(basename "$GRAPH_DIR")" == "graphify-out" ]]; then
+          CLUSTER_ARG=$(dirname "$GRAPH_DIR")
+        fi
+        echo "cluster-only arg: $CLUSTER_ARG"
 
         # extract --code-only does not write the report or HTML; generate them.
-        graphify cluster-only "$GRAPH_DIR"
+        graphify cluster-only "$CLUSTER_ARG"
 
         # Normalize outputs into OUTPUT_DIR so paths and upload stay stable.
         if [[ "$GRAPH_DIR" != "$OUTPUT_DIR" ]]; then
